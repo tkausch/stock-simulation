@@ -2,7 +2,7 @@
 
 - Stock consists of discrete items held in lots; every lot has one unit price.
 - Replenishment arrives as one lot (same price for all items of the lot).
-- Demand is taken from the lot chosen by an issuing strategy (default: cheapest first).
+- Demand is taken item by item from the lot chosen by an issuing strategy (default: cheapest first).
 - Demand orders arrive as a Poisson process (exponential inter-arrival times);
   order size ~ Normal(mu, sigma), rounded up to the next integer (at least 1).
 - Reorder policy (s, S) with s = S * (1 - empty_trigger): whenever the inventory position (on hand + on order)
@@ -27,7 +27,7 @@ class Lot:
     qty: int
 
 
-# Issuing strategy: picks the lot that the next items are taken from.
+# Issuing strategy: picks the lot that the next single item is taken from.
 IssuingStrategy = Callable[[list[Lot]], Lot]
 
 
@@ -43,6 +43,19 @@ def lifo(lots: list[Lot]) -> Lot:
     return max(lots, key=lambda lot: lot.seq)
 
 
+class CheapestPriciest:
+    """Alternate between the cheapest and the most expensive lot, one item each,
+    so both are drawn down by the same amount. Stateful: use one instance per run."""
+
+    def __init__(self):
+        self._cheap_next = True
+
+    def __call__(self, lots: list[Lot]) -> Lot:
+        pick = cheapest_first(lots) if self._cheap_next else max(lots, key=lambda lot: (lot.price, -lot.seq))
+        self._cheap_next = not self._cheap_next
+        return pick
+
+
 @dataclass
 class Params:
     sim_time: float = 800.0
@@ -54,11 +67,15 @@ class Params:
     lead_time_mean: float = 5.0     # mean lead time (exponential); set lead_time_fixed to overrie
     lead_time_fixed: float | None = None
     initial_stock: int = 1400
-    initial_price: float = 15.0
+    initial_price: float | None = None  # defaults to price_mean (the expected lot price)
     price_mean: float = 10.0        # purchase price per lot ~ Normal(price_mean, price_std)
     price_std: float = 5.0
     seed: int | None = 42
     issuing: IssuingStrategy = cheapest_first
+
+    def __post_init__(self):
+        if self.initial_price is None:
+            self.initial_price = self.price_mean
 
     @property
     def s(self) -> float:
@@ -99,16 +116,15 @@ class Inventory:
         self._record()
 
     def remove(self, qty: int) -> int:
-        """Take qty items, lot by lot as chosen by the issuing strategy. Returns the quantity actually served."""
+        """Take qty items, each from the lot chosen by the issuing strategy. Returns the quantity actually served."""
         self.demanded += qty
         served = 0
         while served < qty and self.lots:
             lot = self.issuing(self.lots)
-            take = min(qty - served, lot.qty)
-            lot.qty -= take
-            served += take
-            self.count -= take
-            self.value -= take * lot.price
+            lot.qty -= 1
+            served += 1
+            self.count -= 1
+            self.value -= lot.price
             if lot.qty == 0:
                 self.lots.remove(lot)
         self.unmet += qty - served  # lost sales
@@ -155,7 +171,13 @@ def run(p: Params) -> Inventory:
     return inv
 
 
-STRATEGIES = {f.__name__: f for f in (cheapest_first, fifo, lifo)}
+# name -> factory, so stateful strategies start fresh for every run
+STRATEGIES = {
+    "cheapest_first": lambda: cheapest_first,
+    "fifo": lambda: fifo,
+    "lifo": lambda: lifo,
+    "cheapest_priciest": CheapestPriciest,
+}
 
 
 if __name__ == "__main__":
@@ -168,17 +190,20 @@ if __name__ == "__main__":
     if args.compare:
         import matplotlib.pyplot as plt
         fig, ax = plt.subplots(figsize=(14, 5))
-        for name, strategy in STRATEGIES.items():
-            inv = run(Params(issuing=strategy))
+        for name, make in STRATEGIES.items():
+            inv = run(Params(issuing=make()))
             ts, _, ms = zip(*inv.history)
             ax.step(ts, ms, where="post", label=f"{name} (end {inv.mean_price():.1f})")
+        # same seed -> same purchases for every strategy
+        rt, _, rp = zip(*inv.replenishments)
+        ax.scatter(rt, rp, s=24, color="black", zorder=3, label="market price (lot price)")
         ax.axhline(Params().price_mean, ls=":", c="gray", label="mean lot price")
-        ax.set_xlabel("time"); ax.set_ylabel("mean price in stock"); ax.legend()
+        ax.set_xlabel("time"); ax.set_ylabel("price"); ax.legend()
         plt.tight_layout()
         plt.savefig("inventory_sim_compare.png", dpi=120)
         print("Plot saved to inventory_sim_compare.png")
         raise SystemExit
-    params = Params(issuing=STRATEGIES[args.issuing])
+    params = Params(issuing=STRATEGIES[args.issuing]())
     # the default strategy keeps the plain file name that the paper includes
     plot_file = "inventory_sim.png" if args.issuing == "cheapest_first" else f"inventory_sim_{args.issuing}.png"
     inv = run(params)
@@ -202,12 +227,14 @@ if __name__ == "__main__":
         a1.axhline(params.s, ls="--", c="r", label="s")
         a1.axhline(params.S, ls="--", c="g", label="S")
         a1.set_ylabel("stock"); a1.legend()
-        a2.step(ts, ms, where="post")
-        a2.set_ylabel("mean price")
+        rt, rq, rp = zip(*inv.replenishments)
+        a2.step(ts, ms, where="post", label="mean price in stock")
+        a2.scatter(rt, rp, s=18, color="tab:orange", zorder=3, label="market price (lot price)")
+        a2.axhline(params.price_mean, ls=":", c="gray")
+        a2.set_ylabel("price"); a2.legend()
         dt, dq = zip(*inv.demand_orders)
         a3.vlines(dt, 0, dq, lw=1)
         a3.set_ylabel("demand order size")
-        rt, rq, rp = zip(*inv.replenishments)
         a4.vlines(rt, 0, rp, lw=1, color="tab:orange")
         a4.scatter(rt, rp, s=[q / 2 for q in rq], color="tab:orange")
         a4.axhline(params.price_mean, ls=":", c="gray")
