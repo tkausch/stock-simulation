@@ -33,7 +33,7 @@ python inventory_sim.py --issuing lifo
 python inventory_sim.py --compare        # mean price of all strategies in one chart
 ```
 
-This prints a table of stock level and mean price over time, plus summary statistics (end stock, lost demand, mean price). It also saves the four-panel plot to `inventory_sim.png` (`inventory_sim_fifo.png` / `inventory_sim_lifo.png` for the other strategies). `--compare` saves `inventory_sim_compare.png` instead: stock level, mean price, demand order sizes, and replenishment prices.
+This prints a table of stock level and mean price over time, plus summary statistics (end stock, lost demand, mean price). It also saves the four-panel plot to `inventory_sim.png` (`inventory_sim_fifo.png` / `inventory_sim_lifo.png` for the other strategies): stock level, mean price, demand order sizes, and replenishment prices. `--compare` saves a single chart of the mean price of all strategies to `inventory_sim_compare.png` instead.
 
 ## Parameters
 
