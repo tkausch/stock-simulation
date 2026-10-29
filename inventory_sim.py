@@ -2,7 +2,7 @@
 
 - Stock consists of discrete items held in lots; every lot has one unit price.
 - Replenishment arrives as one lot (same price for all items of the lot).
-- Demand is taken from the cheapest lots first.
+- Demand is taken from the lot chosen by an issuing strategy (default: cheapest first).
 - Demand orders arrive as a Poisson process (exponential inter-arrival times);
   order size ~ Normal(mu, sigma), rounded up to the next integer (at least 1).
 - Reorder policy (s, S) with s = S * (1 - empty_trigger): whenever the inventory position (on hand + on order)
@@ -11,12 +11,36 @@
 - The mean price per item in stock is recorded after every change.
 - Demand orders and replenishment orders (with their lot price) are logged too.
 """
-import heapq
+import argparse
 import math
 import random
 from dataclasses import dataclass, field
+from typing import Callable
 
 import simpy
+
+
+@dataclass
+class Lot:
+    price: float
+    seq: int        # arrival order, also breaks price ties
+    qty: int
+
+
+# Issuing strategy: picks the lot that the next items are taken from.
+IssuingStrategy = Callable[[list[Lot]], Lot]
+
+
+def cheapest_first(lots: list[Lot]) -> Lot:
+    return min(lots, key=lambda lot: (lot.price, lot.seq))
+
+
+def fifo(lots: list[Lot]) -> Lot:
+    return min(lots, key=lambda lot: lot.seq)
+
+
+def lifo(lots: list[Lot]) -> Lot:
+    return max(lots, key=lambda lot: lot.seq)
 
 
 @dataclass
@@ -34,6 +58,7 @@ class Params:
     price_mean: float = 10.0        # purchase price per lot ~ Normal(price_mean, price_std)
     price_std: float = 5.0
     seed: int | None = 42
+    issuing: IssuingStrategy = cheapest_first
 
     @property
     def s(self) -> float:
@@ -44,7 +69,8 @@ class Params:
 @dataclass
 class Inventory:
     env: simpy.Environment
-    lots: list = field(default_factory=list)   # min-heap of [price, seq, qty]
+    issuing: IssuingStrategy = cheapest_first
+    lots: list[Lot] = field(default_factory=list)
     count: int = 0
     value: float = 0.0
     on_order: int = 0
@@ -66,25 +92,25 @@ class Inventory:
         self.history.append((self.env.now, self.count, self.mean_price()))
 
     def add_lot(self, qty: int, price: float):
-        self._seq += 1  # tie-breaker keeps heap comparisons on (price, seq) only
-        heapq.heappush(self.lots, [price, self._seq, qty])
+        self._seq += 1
+        self.lots.append(Lot(price, self._seq, qty))
         self.count += qty
         self.value += qty * price
         self._record()
 
     def remove(self, qty: int) -> int:
-        """Take qty items, cheapest lots first. Returns the quantity actually served."""
+        """Take qty items, lot by lot as chosen by the issuing strategy. Returns the quantity actually served."""
         self.demanded += qty
         served = 0
         while served < qty and self.lots:
-            lot = self.lots[0]
-            take = min(qty - served, lot[2])
-            lot[2] -= take
+            lot = self.issuing(self.lots)
+            take = min(qty - served, lot.qty)
+            lot.qty -= take
             served += take
             self.count -= take
-            self.value -= take * lot[0]
-            if lot[2] == 0:
-                heapq.heappop(self.lots)
+            self.value -= take * lot.price
+            if lot.qty == 0:
+                self.lots.remove(lot)
         self.unmet += qty - served  # lost sales
         if not self.lots:
             self.value = 0.0  # kill floating point drift
@@ -121,7 +147,7 @@ def run(p: Params) -> Inventory:
     if p.seed is not None:
         random.seed(p.seed)
     env = simpy.Environment()
-    inv = Inventory(env)
+    inv = Inventory(env, p.issuing)
     if p.initial_stock:
         inv.add_lot(p.initial_stock, p.initial_price)
     env.process(demand_process(env, inv, p))
@@ -129,8 +155,17 @@ def run(p: Params) -> Inventory:
     return inv
 
 
+STRATEGIES = {f.__name__: f for f in (cheapest_first, fifo, lifo)}
+
+
 if __name__ == "__main__":
-    params = Params()
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--issuing", choices=STRATEGIES, default="cheapest_first",
+                        help="lot selection strategy (default: %(default)s)")
+    args = parser.parse_args()
+    params = Params(issuing=STRATEGIES[args.issuing])
+    # the default strategy keeps the plain file name that the paper includes
+    plot_file = "inventory_sim.png" if args.issuing == "cheapest_first" else f"inventory_sim_{args.issuing}.png"
     inv = run(params)
 
     print(f"{'time':>8} {'stock':>6} {'mean price':>11}")
@@ -163,7 +198,7 @@ if __name__ == "__main__":
         a4.axhline(params.price_mean, ls=":", c="gray")
         a4.set_ylabel("price per replenishment\n(marker size = qty)"); a4.set_xlabel("time")
         plt.tight_layout()
-        plt.savefig("inventory_sim.png", dpi=120)
-        print("Plot saved to inventory_sim.png")
+        plt.savefig(plot_file, dpi=120)
+        print(f"Plot saved to {plot_file}")
     except ImportError:
         pass

@@ -27,10 +27,12 @@ pip install -r requirements.txt
 ## Run
 
 ```sh
-python inventory_sim.py
+python inventory_sim.py                  # cheapest-first (default)
+python inventory_sim.py --issuing fifo
+python inventory_sim.py --issuing lifo
 ```
 
-This prints a table of stock level and mean price over time, plus summary statistics (end stock, lost demand, mean price). It also saves the four-panel plot to `inventory_sim.png`: stock level, mean price, demand order sizes, and replenishment prices.
+This prints a table of stock level and mean price over time, plus summary statistics (end stock, lost demand, mean price). It also saves the four-panel plot to `inventory_sim.png` (`inventory_sim_fifo.png` / `inventory_sim_lifo.png` for the other strategies): stock level, mean price, demand order sizes, and replenishment prices.
 
 ## Parameters
 
@@ -48,6 +50,7 @@ Edit the `Params` dataclass in `inventory_sim.py`, or pass your own to `run()`:
 | `initial_stock`, `initial_price` | 1400, 15.0 | Starting lot |
 | `price_mean`, `price_std` | 10.0, 5.0 | Lot price distribution |
 | `seed` | 42 | Random seed (`None` for a random run) |
+| `issuing` | `cheapest_first` | Lot selection strategy: `cheapest_first`, `fifo`, `lifo`, or your own `list[Lot] -> Lot` function |
 
 ```python
 from inventory_sim import Params, run
