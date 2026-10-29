@@ -1,0 +1,243 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{hyperref}
+
+\title{Mean Price in a Lot-Based Inventory Simulation\\
+       with Cheapest-First Issuing}
+\author{Thomas Kausch}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We describe a discrete-event simulation of a single-item inventory with
+$(s,S)$ replenishment in which stock is held in lots with individual unit
+prices and demand is served from the cheapest lot first.
+The mean price of the items currently in stock is tracked after every event.
+We explain how this quantity is computed and show that, under cheapest-first
+issuing, it is a biased and therefore unusable indicator of purchase prices:
+expensive lots are served last, accumulate in the stock, and push the mean
+price towards the upper end of the lot-price distribution.
+\end{abstract}
+
+\section{Model}
+
+The simulation is implemented in Python with SimPy and consists of three
+components.
+
+\paragraph{Stock.}
+The stock is a set of lots. Each lot $j$ has a quantity $q_j$ and a single
+unit price $p_j$ shared by all of its items. Lots are kept in a min-heap
+ordered by $p_j$.
+
+\paragraph{Demand.}
+Demand orders arrive as a Poisson process with rate $\lambda$, i.e.\ with
+exponentially distributed inter-arrival times. The size of an order is
+$\lceil X\rceil$ with $X\sim\mathcal N(\mu,\sigma^2)$, bounded below by~1.
+An order is served from the cheapest lot first; when that lot is empty the
+next cheapest lot is used. Demand that cannot be served is counted as lost.
+
+\paragraph{Replenishment.}
+We use an $(s,S)$ policy with $s=S\,(1-\tau)$, where $\tau$ is the fraction
+by which the stock may be empty before a re-order is triggered. After every
+demand order, the inventory position (on hand plus on order) is checked. If it
+is at or below $s$, an order of size $S-\text{position}$ is placed. It arrives
+after an exponentially distributed lead time as \emph{one} lot whose unit
+price is drawn from $\mathcal N(\mu_p,\sigma_p^2)$ (truncated at $0.01$).
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{llr}
+\toprule
+Symbol & Meaning & Value \\
+\midrule
+$T$ & simulated time & 800 \\
+$\lambda$ & demand arrival rate & 2.0 \\
+$\mu,\ \sigma$ & order size mean / std.\ dev. & 5.0 / 2.0 \\
+$S$ & order-up-to level (capacity) & 1600 \\
+$\tau$ & re-order trigger fraction & 0.25 \\
+$s$ & re-order point $S(1-\tau)$ & 1200 \\
+ & mean lead time & 5.0 \\
+ & initial stock / initial price & 1400 / 15.0 \\
+$\mu_p,\ \sigma_p$ & lot price mean / std.\ dev. & 10.0 / 5.0 \\
+ & random seed & 42 \\
+\bottomrule
+\end{tabular}
+\caption{Parameters of the simulation run shown in this paper.}
+\label{tab:params}
+\end{table}
+
+\section{Computation of the Mean Price}
+
+Let $L(t)$ be the set of lots in stock at time $t$. The number of items and
+their total value are
+\begin{equation}
+  N(t)=\sum_{j\in L(t)} q_j,
+  \qquad
+  V(t)=\sum_{j\in L(t)} q_j\,p_j ,
+\end{equation}
+and the mean price per item in stock is
+\begin{equation}
+  \bar p(t)=\frac{V(t)}{N(t)} .
+\end{equation}
+
+The two sums are not recomputed from scratch. They are maintained
+incrementally:
+\begin{itemize}
+  \item when a lot of quantity $q$ and price $p$ arrives:
+        $N\leftarrow N+q$ and $V\leftarrow V+q\,p$;
+  \item when $k$ items are taken from the lot with the lowest price $p_{\min}$:
+        $N\leftarrow N-k$ and $V\leftarrow V-k\,p_{\min}$; if the lot is
+        exhausted it is removed from the heap and the next lot is used.
+\end{itemize}
+After every change of the stock the triple $(t,N,\bar p)$ is appended to a
+history, so $\bar p$ is a piecewise-constant function of time. When the stock
+is empty, $V$ is reset to zero to remove accumulated floating-point error, and
+$\bar p$ is undefined. Demand orders and replenishments, with their lot price,
+are logged separately.
+
+\section{Simulation Result}
+
+Figure~\ref{fig:sim} shows one run with the parameters of
+Table~\ref{tab:params}. All 8\,719 demanded items were served (0\,\% lost).
+The panels show, from top to bottom: the stock level with the re-order point
+$s$ and the capacity $S$; the mean price $\bar p(t)$; the size of each demand
+order; and the price of each replenishment lot, with the marker area
+proportional to the lot size.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{inventory_sim.png}
+\caption{Simulation run. The stock level follows the typical saw-tooth of an
+$(s,S)$ policy. The mean price (second panel) does not fluctuate around the
+mean lot price of 10 but drifts upward to roughly 20; its upward-sloping
+segments are interrupted only by drops when a cheap lot arrives.}
+\label{fig:sim}
+\end{figure}
+
+\section{Cheapest-First Issuing and the Upward Drift of the Mean Price}
+
+The second panel of Figure~\ref{fig:sim} shows the central observation. Lot
+prices are drawn around $\mu_p=10$, yet the mean price of the stock grows to
+about $20$ -- more than twice the mean purchase price and even above the mean
+lot price plus one standard deviation. This is not a statistical accident but
+a structural consequence of the issuing rule.
+
+\paragraph{Mechanism.}
+Because demand is always served from the lot with the lowest price, a lot with
+price $p_j$ is touched only after all cheaper lots in stock are exhausted.
+Under an $(s,S)$ policy the stock is replenished long before it is empty
+(here the position never falls below roughly 970 items of 1600), so cheap
+lots are consumed continuously while expensive lots are never reached.
+Consequently:
+\begin{enumerate}
+  \item a new lot with a below-average price is consumed almost immediately and
+        leaves the stock;
+  \item a lot with an above-average price \emph{stays}, and each such lot
+        is added to the part of the stock that is never served;
+  \item the stock therefore becomes a ``sediment'' of the most expensive
+        lots, and $\bar p(t)$ is dominated by them.
+\end{enumerate}
+The mean price rises during every period between two deliveries, because the
+cheapest items are removed and the average of the remaining ones increases.
+Each new lot lowers it only temporarily, by the amount that the lot price lies
+below $\bar p$, weighted by the lot's share of the stock.
+
+\paragraph{Evidence from the run.}
+At the end of the run the stock consists of only four lots,
+\begin{center}
+\begin{tabular}{rr}
+\toprule
+Unit price & Quantity \\
+\midrule
+11.85 &  83 \\
+17.98 & 249 \\
+19.88 & 403 \\
+21.71 & 406 \\
+\bottomrule
+\end{tabular}
+\end{center}
+The most expensive lot of the entire run (price 21.71, the maximum of 21
+replenishments, delivered at $t\approx 497$) is still in stock with 406 items
+and has not been touched. Lots purchased at prices below 10 (for example
+5.0, 0.0 and 5.7 in the bottom panel) were consumed soon after delivery and are
+not part of $\bar p$ any more. In effect $\bar p(t)$ converges towards the
+upper tail of the lot-price distribution. In the limit of a long run, a lot is
+only consumed when it is the only one left, which the replenishment policy
+prevents, so the most expensive lot is in practice never consumed and
+the mean price is pulled towards the maximum price.
+
+\section{Consequences}
+
+The mean price of the stock under cheapest-first issuing is a
+\emph{survivorship-biased} quantity: it describes the items that nobody
+wanted to take, not the items that were bought. It has the following
+consequences.
+
+\begin{itemize}
+  \item It is \textbf{not an estimator of the purchase price}. Its long-run
+        value depends on the number of replenishments and the spread
+        $\sigma_p$, not on $\mu_p$.
+  \item It is \textbf{not usable as a valuation or cost basis} for the issued
+        items, since the issued items are by construction the cheapest ones,
+        whereas $\bar p$ is determined by the most expensive ones.
+  \item It is \textbf{not a stable state variable}: it trends with simulation
+        length and is sensitive to the random seed through single
+        expensive lots.
+  \item It cannot be used to control re-ordering or pricing decisions, because
+        it carries no information about the current market price.
+\end{itemize}
+
+For these reasons, the mean price as defined here is useful only as a
+diagnostic of this very bias. If a meaningful price statistic is needed, the
+issuing rule or the statistic must change. Options are FIFO or LIFO issuing,
+a moving-average cost (where issued items leave at the current mean price, so
+$V\leftarrow V-k\,\bar p$), or recording the price of the \emph{issued} items
+rather than of the items in stock.
+
+\section{Conclusion}
+
+We presented a lot-based inventory simulation with $(s,S)$ replenishment and
+cheapest-first issuing, and derived the incrementally maintained mean price
+$\bar p=V/N$. The simulation shows that this measure inherits a systematic
+upward bias from the issuing rule: expensive lots are never consumed, remain in
+stock, and drive the mean price towards the maximum lot price. The problem is
+therefore not the mean price itself but the decision to always serve from the
+cheapest lot. The resulting property is an artefact of the model and cannot be
+used as a price indicator.
+
+\paragraph{Possible fix.}
+A natural remedy is to serve demand from both ends of the price range, i.e.\
+to take items from the cheapest \emph{and} from the most expensive lot instead
+of from the cheapest lot only (for example alternately, or by splitting each
+order between the two). Expensive lots would then leave the stock as well, and
+the mean price of the stock should move back towards the mean lot price
+instead of towards its maximum. We have not implemented or tested this rule
+yet; it is the next step of this work.
+
+\paragraph{Limits of the fix.}
+Even if the mean price is brought back to the mean, this does not guarantee a
+profit. Items taken from the most expensive lots are sold with a low margin,
+or at a loss, if the selling price does not follow the purchase price. A
+balanced mean price therefore solves the bias of the statistic but opens a
+second problem, the profitability of the issuing rule.
+
+\paragraph{Lesson learned.}
+The mean price of the stock is not only an output of the simulation. In
+reality it influences the selling price and with it the demand. In the model
+presented here, demand is independent of the price: the arrival rate $\lambda$
+and the order size are constants. A realistic model must therefore close this
+loop and describe demand as a function of the (mean) price, for example
+$\lambda=\lambda(\bar p)$. Only then can different issuing rules be compared
+by their effect on sales volume and profit and not only by the mean price they
+produce.
+
+\end{document}
