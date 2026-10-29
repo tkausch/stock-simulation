@@ -162,7 +162,22 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--issuing", choices=STRATEGIES, default="cheapest_first",
                         help="lot selection strategy (default: %(default)s)")
+    parser.add_argument("--compare", action="store_true",
+                        help="plot the mean price of all strategies in one chart")
     args = parser.parse_args()
+    if args.compare:
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(figsize=(14, 5))
+        for name, strategy in STRATEGIES.items():
+            inv = run(Params(issuing=strategy))
+            ts, _, ms = zip(*inv.history)
+            ax.step(ts, ms, where="post", label=f"{name} (end {inv.mean_price():.1f})")
+        ax.axhline(Params().price_mean, ls=":", c="gray", label="mean lot price")
+        ax.set_xlabel("time"); ax.set_ylabel("mean price in stock"); ax.legend()
+        plt.tight_layout()
+        plt.savefig("inventory_sim_compare.png", dpi=120)
+        print("Plot saved to inventory_sim_compare.png")
+        raise SystemExit
     params = Params(issuing=STRATEGIES[args.issuing])
     # the default strategy keeps the plain file name that the paper includes
     plot_file = "inventory_sim.png" if args.issuing == "cheapest_first" else f"inventory_sim_{args.issuing}.png"
